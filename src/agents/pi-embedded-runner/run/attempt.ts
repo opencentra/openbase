@@ -344,7 +344,15 @@ export async function resolvePromptBuildHookResult(params: {
   };
 }
 
-export function resolvePromptModeForSession(sessionKey?: string): "minimal" | "full" {
+export function resolvePromptModeForSession(
+  sessionKey?: string,
+  contextWindowTokens?: number,
+): "minimal" | "full" | "skills-only" {
+  // For small context windows (< 16K tokens), use skills-only mode
+  const SMALL_CONTEXT_THRESHOLD = 16000;
+  if (contextWindowTokens && contextWindowTokens < SMALL_CONTEXT_THRESHOLD) {
+    return "skills-only";
+  }
   if (!sessionKey) {
     return "full";
   }
@@ -638,7 +646,10 @@ export async function runEmbeddedAttempt(
       },
     });
     const isDefaultAgent = sessionAgentId === defaultAgentId;
-    const promptMode = resolvePromptModeForSession(params.sessionKey);
+    const promptMode = resolvePromptModeForSession(
+      params.sessionKey,
+      params.model.contextWindow ?? params.model.maxTokens,
+    );
     const docsPath = await resolveOpenClawDocsPath({
       workspaceDir: effectiveWorkspace,
       argv1: process.argv[1],
@@ -870,6 +881,20 @@ export async function runEmbeddedAttempt(
         // Force a stable streamFn reference so vitest can reliably mock @mariozechner/pi-ai.
         activeSession.agent.streamFn = streamSimple;
       }
+
+      // Debug: log full request payload before sending to AI
+      const originalStreamFn = activeSession.agent.streamFn;
+      activeSession.agent.streamFn = (model, context, options) => {
+        return originalStreamFn(model, context, {
+          ...options,
+          onPayload: (payload: unknown) => {
+            const payloadStr = JSON.stringify(payload, null, 2);
+            const payloadLen = payloadStr.length;
+            log.info(`[AI REQUEST] length=${payloadLen} payload=${payloadStr}`);
+            options?.onPayload?.(payload);
+          },
+        });
+      };
 
       // Ollama with OpenAI-compatible API needs num_ctx in payload.options.
       // Otherwise Ollama defaults to a 4096 context window.

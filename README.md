@@ -1,3 +1,5 @@
+this is a fork with OpenClaw for some token consume optimization in order to minimize token cost.
+
 # 🦞 OpenClaw — Personal AI Assistant
 
 <p align="center">

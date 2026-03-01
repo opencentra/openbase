@@ -428,9 +428,18 @@ export function buildAgentSystemPrompt(params: {
     return "You are a personal assistant running inside OpenClaw.";
   }
 
-  // For "skills-only" mode, return minimal prompt
+  // For "skills-only" mode, return minimal prompt with MCP tool guidance
   if (isSkillsOnly) {
-    return "You are a personal assistant.";
+    return `You are a personal assistant.
+
+## Tools
+You have access to MCP (Model Context Protocol) tools. Tool names use format: server__tool (e.g., external-mcp__add).
+- For calculations: use external-mcp__add tool
+- For getting time: use external-mcp__get_current_time tool
+- For greetings: use external-mcp__say_hello tool
+- For web automation: use playwright__ tools
+
+Always prefer using tools over calculating yourself. Call tools exactly as listed.`;
   }
 
   const lines = [

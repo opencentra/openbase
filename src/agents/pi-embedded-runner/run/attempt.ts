@@ -6,6 +6,7 @@ import {
   createAgentSession,
   DefaultResourceLoader,
   SessionManager,
+  type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
 import { resolveHeartbeatPrompt } from "../../../auto-reply/heartbeat.js";
 import { resolveChannelCapabilities } from "../../../config/channel-capabilities.js";
@@ -58,6 +59,13 @@ import { resolveSandboxContext } from "../../sandbox.js";
 import { resolveSandboxRuntimeStatus } from "../../sandbox/runtime-status.js";
 import { repairSessionFileIfNeeded } from "../../session-file-repair.js";
 import { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
+import {
+  callMcpTool,
+  isMcpToolName,
+  loadMcpToolsAsClientTools,
+  loadMcpToolsAsToolDefinitions,
+  parseMcpToolName,
+} from "../../mcp-tools-loader.js";
 import { sanitizeToolUseResultPairing } from "../../session-transcript-repair.js";
 import {
   acquireSessionWriteLock,
@@ -909,11 +917,23 @@ export async function runEmbeddedAttempt(
           )
         : [];
 
+      // For skills-only mode: load MCP tools and discard built-in/custom tools
+      let mcpToolDefs: ToolDefinition[] = [];
+      if (isSkillsOnly) {
+        try {
+          mcpToolDefs = await loadMcpToolsAsToolDefinitions();
+          log.info(`[mcp-tools] Loaded ${mcpToolDefs.length} MCP tool definitions`);
+        } catch (err) {
+          log.error(`[mcp-tools] Failed to load MCP tools: ${err}`);
+        }
+      }
+
       const allCustomTools = [...customTools, ...clientToolDefs];
 
-      // For skills-only mode, keep only 1 minimal tool definition
-      const finalBuiltInTools = isSkillsOnly ? builtInTools.slice(0, 1) : builtInTools;
-      const finalCustomTools = isSkillsOnly ? [] : allCustomTools;
+      // For skills-only mode: only keep MCP tools, discard built-in and custom tools
+      const finalBuiltInTools = isSkillsOnly ? [] : builtInTools;
+      const finalCustomTools = isSkillsOnly ? mcpToolDefs : allCustomTools;
+      log.info(`[tools] builtIn=${builtInTools.length}, custom=${customTools.length}, client=${clientToolDefs.length}, mcp=${mcpToolDefs.length}, finalBuiltIn=${finalBuiltInTools.length}, finalCustom=${finalCustomTools.length}`);
 
       ({ session } = await createAgentSession({
         cwd: resolvedWorkspace,

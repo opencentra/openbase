@@ -35,6 +35,17 @@ function buildSkillsSection(params: { skillsPrompt?: string; readToolName: strin
   ];
 }
 
+/** Extract skill names from skills prompt XML */
+function extractSkillNames(skillsPrompt: string): string[] {
+  const names: string[] = [];
+  const regex = /<name>([^<]+)<\/name>/g;
+  let match;
+  while ((match = regex.exec(skillsPrompt)) !== null) {
+    names.push(match[1]);
+  }
+  return names;
+}
+
 function buildMemorySection(params: {
   isMinimal: boolean;
   availableTools: Set<string>;
@@ -417,16 +428,9 @@ export function buildAgentSystemPrompt(params: {
     return "You are a personal assistant running inside OpenClaw.";
   }
 
-  // For "skills-only" mode, return only Skills + Runtime (for small context models)
+  // For "skills-only" mode, return minimal prompt
   if (isSkillsOnly) {
-    const skillsOnlyLines = [
-      "You are a personal assistant running inside OpenClaw.",
-      "",
-      ...skillsSection,
-      "## Runtime",
-      buildRuntimeLine(runtimeInfo, runtimeChannel, runtimeCapabilities, params.defaultThinkLevel),
-    ];
-    return skillsOnlyLines.filter(Boolean).join("\n");
+    return "You are a personal assistant.";
   }
 
   const lines = [

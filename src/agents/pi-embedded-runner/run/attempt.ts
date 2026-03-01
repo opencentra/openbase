@@ -225,6 +225,56 @@ export function wrapOllamaCompatNumCtx(baseFn: StreamFn | undefined, numCtx: num
     });
 }
 
+/**
+ * vLLM compatibility wrapper - removes fields not supported by vLLM:
+ * - Converts content arrays to strings
+ * - Removes stream_options, store, tools
+ * - Changes max_completion_tokens to max_tokens
+ */
+export function wrapVllmCompat(baseFn: StreamFn | undefined): StreamFn {
+  const streamFn = baseFn ?? streamSimple;
+  return (model, context, options) =>
+    streamFn(model, context, {
+      ...options,
+      onPayload: (payload: unknown) => {
+        if (!payload || typeof payload !== "object") {
+          options?.onPayload?.(payload);
+          return;
+        }
+        const p = payload as Record<string, unknown>;
+
+        // Remove vLLM-incompatible fields
+        delete p.stream_options;
+        delete p.store;
+        delete p.tools;
+
+        // Rename max_completion_tokens to max_tokens
+        if (p.max_completion_tokens !== undefined) {
+          p.max_tokens = p.max_completion_tokens;
+          delete p.max_completion_tokens;
+        }
+
+        // Convert content arrays to strings in messages
+        if (Array.isArray(p.messages)) {
+          for (const msg of p.messages) {
+            if (msg && typeof msg === "object" && Array.isArray(msg.content)) {
+              // Extract text from content array
+              const textParts: string[] = [];
+              for (const part of msg.content) {
+                if (part && typeof part === "object" && part.type === "text" && typeof part.text === "string") {
+                  textParts.push(part.text);
+                }
+              }
+              msg.content = textParts.join("\n");
+            }
+          }
+        }
+
+        options?.onPayload?.(payload);
+      },
+    });
+}
+
 function trimWhitespaceFromToolCallNamesInMessage(message: unknown): void {
   if (!message || typeof message !== "object") {
     return;
@@ -357,6 +407,49 @@ export function resolvePromptModeForSession(
     return "full";
   }
   return isSubagentSessionKey(sessionKey) ? "minimal" : "full";
+}
+
+/**
+ * Strip verbose descriptions from tool parameters to save tokens.
+ * For skills-only mode: keep only tool name, remove description and parameters entirely.
+ */
+function stripToolDescriptions<T extends { name: string; description?: string; parameters?: unknown }>(
+  tools: T[],
+): T[] {
+  return tools.map((tool) => {
+    return {
+      name: tool.name,
+      description: "",
+      parameters: { type: "object", properties: {} },
+    } as T;
+  });
+}
+
+function stripSchemaDescriptions(schema: unknown): unknown {
+  if (!schema || typeof schema !== "object") {
+    return schema;
+  }
+  const obj = schema as Record<string, unknown>;
+
+  // Remove description from this level
+  const { description: _, ...rest } = obj;
+
+  // Recursively strip from nested objects
+  for (const key of Object.keys(rest)) {
+    if (key === "properties" && typeof rest[key] === "object" && rest[key] !== null) {
+      const props = rest[key] as Record<string, unknown>;
+      const strippedProps: Record<string, unknown> = {};
+      for (const [propName, propSchema] of Object.entries(props)) {
+        strippedProps[propName] = stripSchemaDescriptions(propSchema);
+      }
+      rest[key] = strippedProps;
+    } else if (key === "items" && typeof rest[key] === "object" && rest[key] !== null) {
+      rest[key] = stripSchemaDescriptions(rest[key]);
+    } else if (Array.isArray(rest[key])) {
+      rest[key] = rest[key].map((item) => stripSchemaDescriptions(item));
+    }
+  }
+  return rest;
 }
 
 export function resolveAttemptFsWorkspaceOnly(params: {
@@ -650,6 +743,7 @@ export async function runEmbeddedAttempt(
       params.sessionKey,
       params.model.contextWindow ?? params.model.maxTokens,
     );
+    const isSkillsOnly = promptMode === "skills-only";
     const docsPath = await resolveOpenClawDocsPath({
       workspaceDir: effectiveWorkspace,
       argv1: process.argv[1],
@@ -817,6 +911,10 @@ export async function runEmbeddedAttempt(
 
       const allCustomTools = [...customTools, ...clientToolDefs];
 
+      // For skills-only mode, keep only 1 minimal tool definition
+      const finalBuiltInTools = isSkillsOnly ? builtInTools.slice(0, 1) : builtInTools;
+      const finalCustomTools = isSkillsOnly ? [] : allCustomTools;
+
       ({ session } = await createAgentSession({
         cwd: resolvedWorkspace,
         agentDir,
@@ -824,8 +922,8 @@ export async function runEmbeddedAttempt(
         modelRegistry: params.modelRegistry,
         model: params.model,
         thinkingLevel: mapThinkingLevel(params.thinkLevel),
-        tools: builtInTools,
-        customTools: allCustomTools,
+        tools: finalBuiltInTools,
+        customTools: finalCustomTools,
         sessionManager,
         settingsManager,
         resourceLoader,
@@ -895,6 +993,11 @@ export async function runEmbeddedAttempt(
           },
         });
       };
+
+      // vLLM compatibility: for skills-only mode (small context), strip incompatible fields
+      if (isSkillsOnly) {
+        activeSession.agent.streamFn = wrapVllmCompat(activeSession.agent.streamFn);
+      }
 
       // Ollama with OpenAI-compatible API needs num_ctx in payload.options.
       // Otherwise Ollama defaults to a 4096 context window.

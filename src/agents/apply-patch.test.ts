@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { applyPatch } from "./apply-patch.js";
 
 async function withTempDir<T>(fn: (dir: string) => Promise<T>) {
@@ -147,7 +147,30 @@ describe("applyPatch", () => {
     });
   });
 
+  it("resolves delete targets before calling fs.rm", async () => {
+    await withTempDir(async (dir) => {
+      const target = path.join(dir, "delete-me.txt");
+      await fs.writeFile(target, "x\n", "utf8");
+      const rmSpy = vi.spyOn(fs, "rm");
+
+      try {
+        const patch = `*** Begin Patch
+*** Delete File: delete-me.txt
+*** End Patch`;
+
+        await applyPatch(patch, { cwd: dir });
+        expect(rmSpy).toHaveBeenCalledWith(target);
+      } finally {
+        rmSpy.mockRestore();
+      }
+    });
+  });
+
   it("rejects symlink escape attempts by default", async () => {
+    // File symlinks require SeCreateSymbolicLinkPrivilege on Windows.
+    if (process.platform === "win32") {
+      return;
+    }
     await withTempDir(async (dir) => {
       const outside = path.join(path.dirname(dir), "outside-target.txt");
       const linkPath = path.join(dir, "link.txt");
@@ -232,6 +255,10 @@ describe("applyPatch", () => {
   });
 
   it("allows symlinks that resolve within cwd by default", async () => {
+    // File symlinks require SeCreateSymbolicLinkPrivilege on Windows.
+    if (process.platform === "win32") {
+      return;
+    }
     await withTempDir(async (dir) => {
       const target = path.join(dir, "target.txt");
       const linkPath = path.join(dir, "link.txt");
@@ -259,7 +286,9 @@ describe("applyPatch", () => {
       await fs.writeFile(outsideFile, "victim\n", "utf8");
 
       const linkDir = path.join(dir, "linkdir");
-      await fs.symlink(outsideDir, linkDir);
+      // Use 'junction' on Windows — junctions target directories without
+      // requiring SeCreateSymbolicLinkPrivilege.
+      await fs.symlink(outsideDir, linkDir, process.platform === "win32" ? "junction" : undefined);
 
       const patch = `*** Begin Patch
 *** Delete File: linkdir/victim.txt
@@ -310,7 +339,13 @@ describe("applyPatch", () => {
         await fs.writeFile(outsideTarget, "keep\n", "utf8");
 
         const linkDir = path.join(dir, "link");
-        await fs.symlink(outsideDir, linkDir);
+        // Use 'junction' on Windows — junctions target directories without
+        // requiring SeCreateSymbolicLinkPrivilege.
+        await fs.symlink(
+          outsideDir,
+          linkDir,
+          process.platform === "win32" ? "junction" : undefined,
+        );
 
         const patch = `*** Begin Patch
 *** Delete File: link

@@ -1,15 +1,24 @@
+import { isValueToken } from "../../infra/cli-root-options.js";
 import { defaultRuntime } from "../../runtime.js";
-import { getFlagValue, getPositiveIntFlagValue, getVerboseFlag, hasFlag } from "../argv.js";
+import {
+  getCommandPositionalsWithRootOptions,
+  getFlagValue,
+  getPositiveIntFlagValue,
+  getVerboseFlag,
+  hasFlag,
+} from "../argv.js";
 
 export type RouteSpec = {
   match: (path: string[]) => boolean;
-  loadPlugins?: boolean;
+  loadPlugins?: boolean | ((argv: string[]) => boolean);
   run: (argv: string[]) => Promise<boolean>;
 };
 
 const routeHealth: RouteSpec = {
   match: (path) => path[0] === "health",
-  loadPlugins: true,
+  // `health --json` only relays gateway RPC output and does not need local plugin metadata.
+  // Keep plugin preload for text output where channel diagnostics/logSelfId are rendered.
+  loadPlugins: (argv) => !hasFlag(argv, "--json"),
   run: async (argv) => {
     const json = hasFlag(argv, "--json");
     const verbose = getVerboseFlag(argv, { includeDebug: true });
@@ -25,7 +34,9 @@ const routeHealth: RouteSpec = {
 
 const routeStatus: RouteSpec = {
   match: (path) => path[0] === "status",
-  loadPlugins: true,
+  // `status --json` can defer channel plugin loading until config/env inspection
+  // proves it is needed, which keeps the fast-path startup lightweight.
+  loadPlugins: (argv) => !hasFlag(argv, "--json"),
   run: async (argv) => {
     const json = hasFlag(argv, "--json");
     const deep = hasFlag(argv, "--deep");
@@ -95,21 +106,6 @@ const routeMemoryStatus: RouteSpec = {
   },
 };
 
-function getCommandPositionals(argv: string[]): string[] {
-  const out: string[] = [];
-  const args = argv.slice(2);
-  for (const arg of args) {
-    if (!arg || arg === "--") {
-      break;
-    }
-    if (arg.startsWith("-")) {
-      continue;
-    }
-    out.push(arg);
-  }
-  return out;
-}
-
 function getFlagValues(argv: string[], name: string): string[] | null {
   const values: string[] = [];
   const args = argv.slice(2);
@@ -120,7 +116,7 @@ function getFlagValues(argv: string[], name: string): string[] | null {
     }
     if (arg === name) {
       const next = args[i + 1];
-      if (!next || next === "--" || next.startsWith("-")) {
+      if (!isValueToken(next)) {
         return null;
       }
       values.push(next);
@@ -141,8 +137,14 @@ function getFlagValues(argv: string[], name: string): string[] | null {
 const routeConfigGet: RouteSpec = {
   match: (path) => path[0] === "config" && path[1] === "get",
   run: async (argv) => {
-    const positionals = getCommandPositionals(argv);
-    const pathArg = positionals[2];
+    const positionals = getCommandPositionalsWithRootOptions(argv, {
+      commandPath: ["config", "get"],
+      booleanFlags: ["--json"],
+    });
+    if (!positionals || positionals.length !== 1) {
+      return false;
+    }
+    const pathArg = positionals[0];
     if (!pathArg) {
       return false;
     }
@@ -156,8 +158,13 @@ const routeConfigGet: RouteSpec = {
 const routeConfigUnset: RouteSpec = {
   match: (path) => path[0] === "config" && path[1] === "unset",
   run: async (argv) => {
-    const positionals = getCommandPositionals(argv);
-    const pathArg = positionals[2];
+    const positionals = getCommandPositionalsWithRootOptions(argv, {
+      commandPath: ["config", "unset"],
+    });
+    if (!positionals || positionals.length !== 1) {
+      return false;
+    }
+    const pathArg = positionals[0];
     if (!pathArg) {
       return false;
     }
